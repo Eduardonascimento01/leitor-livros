@@ -45,4 +45,31 @@ teste('dividir texto longo em páginas', () => {
   assert.deepStrictEqual(pgs.map(p => p.length), [3, 2]);
 });
 
+teste('caixas do PDF: palavra partida em 2 pedaços vira 1 palavra com 2 caixas', () => {
+  const it = (str, x, y, w, eol) => ({ str, transform: [10, 0, 0, 10, x, y], width: w, hasEOL: !!eol });
+  const conv = (x, y, w) => ({ x, y, w, h: 1 });
+  // "Capi" + "tães" colados (sem espaço e sem distância) e depois " da" separado
+  const linhas = T.linhasTokensDoPdf([it('Capi', 0, 100, 20), it('tães', 20, 100, 20), it(' da', 40, 100, 15, true)], conv);
+  assert.deepStrictEqual(linhas[0].map(w => w.t), ['Capitães', 'da']);
+  assert.strictEqual(linhas[0][0].caixas.length, 2);
+  assert.strictEqual(linhas[0][1].caixas[0].x, 45);   // " da": a palavra começa depois do espaço
+});
+
+teste('hífen no fim da linha junta as caixas das duas partes', () => {
+  const tk = (t, x) => ({ t, caixas: [{ x, y: 0, w: 1, h: 1 }] });
+  const ps = T.paragrafosDeTokens([[tk('uma', 0), tk('pala-', 1)], [tk('vra.', 2)]]);
+  assert.deepStrictEqual(ps[0].map(w => w.t), ['uma', 'palavra.']);
+  assert.deepStrictEqual(ps[0][1].caixas.map(c => c.x), [1, 2]);
+  const p = T.montarPagina(ps);
+  assert.strictEqual(p.caixas[1].length, 2);
+});
+
+teste('OCR: caixas viram frações da imagem e parágrafos são separados', () => {
+  const w = (text, x0) => ({ text, bbox: { x0, y0: 50, x1: x0 + 100, y1: 100 } });
+  const dados = { paragraphs: [{ lines: [{ words: [w('Olá', 0), w('mundo', 200)] }] }, { lines: [{ words: [w('Fim', 0)] }] }] };
+  const ps = T.paragrafosDeTokens(T.linhasTokensDoOcr(dados, 1000, 500));
+  assert.deepStrictEqual(ps.map(p => p.map(x => x.t).join(' ')), ['Olá mundo', 'Fim']);
+  assert.deepStrictEqual(ps[0][1].caixas[0], { x: 0.2, y: 0.1, w: 0.1, h: 0.1 });
+});
+
 console.log(`\n${ok} testes passaram.`);

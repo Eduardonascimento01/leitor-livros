@@ -90,6 +90,22 @@ select {
 }
 .pagina + .pagina { border-top: 1px dashed var(--borda); margin-top: 1.5em; padding-top: 1.2em; }
 .sem-texto { color: var(--suave); font-style: italic; }
+
+/* Modo "página original": a página do PDF/foto + caixinhas em cima das palavras */
+.leitura.modo-original { max-width: 920px; padding: 16px; }
+.folha { position: relative; line-height: 0; box-shadow: 0 1px 6px rgba(0, 0, 0, .18); background: #fff; }
+.imagem-pagina { display: block; width: 100%; height: auto; }
+.leitura .pal.caixa {
+  position: absolute; border-radius: 3px;
+  mix-blend-mode: multiply;            /* pinta como marca-texto: a letra continua visível */
+  text-decoration: none;
+}
+.leitura .pal.caixa:hover { background: rgba(47, 111, 223, .15); text-decoration: none; }
+.leitura .pal.caixa.na-frase { background: rgba(255, 216, 77, .28); }
+.leitura .pal.caixa.lendo {
+  background: rgba(255, 196, 0, .65);
+  box-shadow: 0 0 0 2px rgba(230, 150, 0, .9);
+}
 .sentinela { height: 1px; }
 .voltar {
   position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 6;

@@ -10,6 +10,7 @@ Lê PDFs, fotos de páginas e arquivos `.txt` em voz alta, **destacando a palavr
 - **Clique numa palavra** para ler a partir dela.
 - **Marcador automático:** ao abrir o mesmo arquivo de novo, continua de onde parou.
 - **Rolagem contínua:** as páginas aparecem uma embaixo da outra. Durante a leitura você pode rolar à vontade; o botão "Voltar para a leitura" faz a tela acompanhar a voz de novo.
+- **Ver página original** (PDF e imagens): mostra o livro como ele é, uma página embaixo da outra, e marca a palavra lida em cima da própria página (como um marca-texto). O botão alterna com o modo texto.
 - Passa de página sozinho; tema claro/escuro; letra maior ou menor; funciona no celular.
 
 ### Atalhos
@@ -41,7 +42,6 @@ node teste.js
 - [ ] Resumo do capítulo e explicação de trecho com IA (Groq)
 - [ ] Abrir EPUB
 - [ ] Timer de sono
-- [ ] Ver a página original do PDF ao lado do texto
 - [ ] Gerar MP3 do capítulo
 - [ ] Estatísticas de leitura (minutos por dia)
 - [ ] Barra de controles mais compacta no celular

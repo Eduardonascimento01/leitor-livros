@@ -11,7 +11,7 @@
     tocar: $('tocar'), pagAnt: $('pagAnt'), pagProx: $('pagProx'), paginaInfo: $('paginaInfo'),
     voz: $('voz'), velocidade: $('velocidade'), velValor: $('velValor'),
     fonteMenos: $('fonteMenos'), fonteMais: $('fonteMais'), tema: $('tema'), soltar: $('soltar'),
-    voltar: $('voltar'),
+    voltar: $('voltar'), modo: $('modo'),
   };
 
   // ---------- preferências (guardadas só neste navegador) ----------
@@ -22,7 +22,7 @@
   function gravar(chave, valor) {
     try { localStorage.setItem(chave, JSON.stringify(valor)); } catch { /* modo privado: ignora */ }
   }
-  const prefs = Object.assign({ voz: '', velocidade: 1, fonte: 1.25, tema: 'claro' }, ler('leitor:prefs', {}));
+  const prefs = Object.assign({ voz: '', velocidade: 1, fonte: 1.25, tema: 'claro', modo: 'texto' }, ler('leitor:prefs', {}));
   const salvarPrefs = () => gravar('leitor:prefs', prefs);
 
   // ---------- estado ----------
@@ -42,6 +42,7 @@
     recebeuPalavra: false,
     seguir: true,       // a tela acompanha a leitura? (desliga quando você rola)
     autoRolando: false,
+    layout: 0,          // muda a cada vez que a tela é refeita do zero
   };
 
   const status = msg => { tela.status.textContent = msg || ''; };
@@ -91,7 +92,8 @@
 
   // ---------- fontes de texto (PDF, imagens, .txt) ----------
   let ocrTrabalhador = null;
-  async function ocr(imagem, rotulo) {
+  // OCR: devolve o texto E onde cada palavra está na imagem
+  async function ocr(imagem, rotulo, larg, alt) {
     if (!window.Tesseract) throw new Error('não consegui carregar o leitor de imagens (sem internet?)');
     if (!ocrTrabalhador) {
       status('Preparando o leitor de imagens (só na 1ª vez demora um pouco)...');
@@ -99,9 +101,23 @@
         logger: m => { if (m.status === 'recognizing text') status(`${rotulo}: lendo a imagem ${Math.round(m.progress * 100)}%`); },
       });
     }
-    const { data } = await (await ocrTrabalhador).recognize(imagem);
+    const { data } = await (await ocrTrabalhador).recognize(imagem, {}, { text: true, blocks: true });
     status('');
-    return data.text;
+    if (data.paragraphs && data.paragraphs.length) {
+      return Texto.paragrafosDeTokens(Texto.linhasTokensDoOcr(data, larg, alt));
+    }
+    return Texto.paragrafosDeLinhas((data.text || '').split('\n'));   // sem posições
+  }
+
+  // Desenha a página do PDF num <canvas> com a largura pedida (em pixels)
+  async function desenharPaginaPdf(pagina, largura) {
+    const v1 = pagina.getViewport({ scale: 1 });
+    const vista = pagina.getViewport({ scale: largura / v1.width });
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(vista.width);
+    canvas.height = Math.round(vista.height);
+    await pagina.render({ canvasContext: canvas.getContext('2d'), viewport: vista }).promise;
+    return canvas;
   }
 
   async function fonteDePdf(arquivo) {
@@ -113,23 +129,44 @@
       async obterPagina(n) {
         const pagina = await pdf.getPage(n + 1);
         const conteudo = await pagina.getTextContent();
-        const linhas = Texto.linhasDoPdf(conteudo.items);
-        if (linhas.join('').replace(/\s/g, '').length >= 20) return Texto.paragrafosDeLinhas(linhas);
+        const v1 = pagina.getViewport({ scale: 1 });
+        // Posição no PDF (x, y da linha de base, largura, tamanho da letra) -> caixa na página (0 a 1)
+        const conv = (x, y, w, tam) => {
+          const r = v1.convertToViewportRectangle([x, y - tam * 0.25, x + w, y + tam * 0.85]);
+          const x0 = Math.min(r[0], r[2]), x1 = Math.max(r[0], r[2]);
+          const y0 = Math.min(r[1], r[3]), y1 = Math.max(r[1], r[3]);
+          return { x: x0 / v1.width, y: y0 / v1.height, w: (x1 - x0) / v1.width, h: (y1 - y0) / v1.height };
+        };
+        const linhas = Texto.linhasTokensDoPdf(conteudo.items, conv);
+        const letras = linhas.reduce((soma, l) => soma + l.reduce((s, w) => s + w.t.length, 0), 0);
+        if (letras >= 20) return Texto.paragrafosDeTokens(linhas);
         // Página sem texto (escaneada ou capa): desenha e passa pelo OCR
-        const vista = pagina.getViewport({ scale: 2 });
-        const canvas = document.createElement('canvas');
-        canvas.width = vista.width; canvas.height = vista.height;
-        await pagina.render({ canvasContext: canvas.getContext('2d'), viewport: vista }).promise;
-        return Texto.paragrafosDeLinhas((await ocr(canvas, `Página ${n + 1}`)).split('\n'));
+        const canvas = await desenharPaginaPdf(pagina, Math.min(2400, v1.width * 2));
+        return ocr(canvas, `Página ${n + 1}`, canvas.width, canvas.height);
+      },
+      async desenharOriginal(n, largura) {
+        return desenharPaginaPdf(await pdf.getPage(n + 1), largura);
       },
     };
   }
 
   function fonteDeImagens(arquivos) {
+    const urls = [];
     return {
       total: arquivos.length,
       async obterPagina(n) {
-        return Texto.paragrafosDeLinhas((await ocr(arquivos[n], arquivos[n].name)).split('\n'));
+        const bmp = await createImageBitmap(arquivos[n]);
+        const larg = bmp.width, alt = bmp.height;
+        bmp.close();
+        return ocr(arquivos[n], arquivos[n].name, larg, alt);
+      },
+      async desenharOriginal(n) {
+        if (!urls[n]) urls[n] = URL.createObjectURL(arquivos[n]);
+        const img = new Image();
+        img.src = urls[n];
+        img.alt = arquivos[n].name;
+        await img.decode().catch(() => {});
+        return img;
       },
     };
   }
@@ -196,7 +233,19 @@
     return estado.paginas[n];
   }
 
-  function desenharSecao(n, pagina) {
+  // Liga/desliga uma classe na palavra (e nas caixas extras dela, se a palavra
+  // estava partida em 2 linhas na página original)
+  function classe(s, nome, ligar) {
+    if (!s) return;
+    s.classList.toggle(nome, ligar);
+    if (s.extras) for (const e of s.extras) e.classList.toggle(nome, ligar);
+  }
+
+  function modoOriginal() {
+    return prefs.modo === 'original' && !!(estado.fonte && estado.fonte.desenharOriginal);
+  }
+
+  async function desenharSecao(n, pagina) {
     const secao = document.createElement('section');
     secao.className = 'pagina';
     secao.dataset.pag = n;
@@ -204,49 +253,78 @@
     h.textContent = `Página ${n + 1} de ${estado.fonte.total}`;
     secao.appendChild(h);
     const spans = [];
-    for (const [ini, fim] of pagina.blocos) {
-      const p = document.createElement('p');
-      for (let i = ini; i <= fim; i++) {
-        const s = document.createElement('span');
-        s.className = 'pal';
-        s.dataset.i = i;
-        s.textContent = pagina.palavras[i];   // textContent: texto do arquivo nunca vira HTML
-        spans[i] = s;
-        p.appendChild(s);
-        if (i < fim) p.appendChild(document.createTextNode(' '));
+    if (modoOriginal()) {
+      // Página como ela é + uma caixinha transparente em cima de cada palavra
+      const folha = document.createElement('div');
+      folha.className = 'folha';
+      const largura = Math.min(2400, Math.round(tela.leitura.clientWidth * (window.devicePixelRatio || 1)));
+      const imagem = await estado.fonte.desenharOriginal(n, largura);
+      imagem.classList.add('imagem-pagina');
+      folha.appendChild(imagem);
+      pagina.caixas.forEach((caixas, i) => {
+        caixas.forEach((c, k) => {
+          const d = document.createElement('div');
+          d.className = 'pal caixa';
+          d.dataset.i = i;
+          d.style.left = (c.x * 100) + '%';
+          d.style.top = (c.y * 100) + '%';
+          d.style.width = (c.w * 100) + '%';
+          d.style.height = (c.h * 100) + '%';
+          d.title = pagina.palavras[i];
+          if (k === 0) { spans[i] = d; d.extras = []; } else spans[i].extras.push(d);
+          folha.appendChild(d);
+        });
+      });
+      secao.appendChild(folha);
+    } else {
+      for (const [ini, fim] of pagina.blocos) {
+        const p = document.createElement('p');
+        for (let i = ini; i <= fim; i++) {
+          const s = document.createElement('span');
+          s.className = 'pal';
+          s.dataset.i = i;
+          s.textContent = pagina.palavras[i];   // textContent: texto do arquivo nunca vira HTML
+          spans[i] = s;
+          p.appendChild(s);
+          if (i < fim) p.appendChild(document.createTextNode(' '));
+        }
+        secao.appendChild(p);
       }
-      secao.appendChild(p);
-    }
-    if (!pagina.blocos.length) {
-      const p = document.createElement('p');
-      p.className = 'sem-texto';
-      p.textContent = '(página sem texto)';
-      secao.appendChild(p);
+      if (!pagina.blocos.length) {
+        const p = document.createElement('p');
+        p.className = 'sem-texto';
+        p.textContent = '(página sem texto)';
+        secao.appendChild(p);
+      }
     }
     estado.spans[n] = spans;
     estado.secoes[n] = secao;
     return secao;
   }
 
-  // Começa a tela de novo a partir da página n (botões ⏮ ⏭, abrir arquivo, marcador)
+  // Começa a tela de novo a partir da página n (botões ⏮ ⏭, abrir arquivo, marcador, troca de modo)
   async function irParaPagina(n, posicao = 0) {
     if (!estado.fonte || n < 0 || n >= estado.fonte.total) return false;
     const fonte = estado.fonte;
+    const layout = ++estado.layout;
     tela.leitura.setAttribute('aria-busy', 'true');
-    let pagina;
+    let pagina, secao;
     try {
       pagina = await prepararPagina(n);
+      if (estado.fonte !== fonte || layout !== estado.layout) return false;   // mudou algo no meio
+      estado.secoes = []; estado.spans = []; estado.frase = [];
+      tela.leitura.classList.toggle('modo-original', modoOriginal());
+      secao = await desenharSecao(n, pagina);
     } catch (e) {
       status(`Erro na página ${n + 1}: ${e.message}`);
       tela.leitura.removeAttribute('aria-busy');
       return false;
     }
-    if (estado.fonte !== fonte) return false;   // abriram outro arquivo no meio
-    estado.secoes = []; estado.spans = []; estado.frase = [];
+    if (estado.fonte !== fonte || layout !== estado.layout) return false;
     estado.primeira = n; estado.ultima = n;
     estado.atual = n;
     estado.pos = Math.min(posicao, Math.max(0, pagina.palavras.length - 1));
-    tela.leitura.replaceChildren(desenharSecao(n, pagina), sentinela);
+    tela.leitura.replaceChildren(secao, sentinela);
     tela.leitura.removeAttribute('aria-busy');
     atualizarBotoes();
     estado.seguir = true;
@@ -258,22 +336,27 @@
   }
 
   // Coloca a próxima página embaixo das que já estão na tela
-  let anexando = null;
+  let anexando = null;   // { layout, promessa }
   function anexarProxima() {
-    if (anexando) return anexando;
+    if (anexando && anexando.layout === estado.layout) return anexando.promessa;
     if (!estado.fonte || estado.ultima + 1 >= estado.fonte.total) return Promise.resolve(false);
     const fonte = estado.fonte;
+    const layout = estado.layout;
     const n = estado.ultima + 1;
-    anexando = prepararPagina(n).then(pagina => {
-      if (estado.fonte !== fonte || estado.ultima + 1 !== n) return false;
-      tela.leitura.insertBefore(desenharSecao(n, pagina), sentinela);
-      estado.ultima = n;
-      return true;
-    }).catch(e => {
-      status(`Erro na página ${n + 1}: ${e.message}`);
-      return false;
-    }).finally(() => { anexando = null; });
-    return anexando;
+    const atual = { layout };
+    atual.promessa = prepararPagina(n)
+      .then(pagina => desenharSecao(n, pagina))
+      .then(secao => {
+        if (estado.fonte !== fonte || layout !== estado.layout || estado.ultima + 1 !== n) return false;
+        tela.leitura.insertBefore(secao, sentinela);
+        estado.ultima = n;
+        return true;
+      }).catch(e => {
+        status(`Erro na página ${n + 1}: ${e.message}`);
+        return false;
+      }).finally(() => { if (anexando === atual) anexando = null; });
+    anexando = atual;
+    return atual.promessa;
   }
 
   // Enche a tela: vai colocando páginas até passar um pouco do fim da janela
@@ -299,6 +382,10 @@
     tela.tocar.disabled = !total;
     tela.tocar.textContent = estado.lendo ? '⏸' : '▶';
     tela.tocar.setAttribute('aria-label', estado.lendo ? 'Pausar' : 'Ler');
+    const temOriginal = !!(estado.fonte && estado.fonte.desenharOriginal);
+    tela.modo.disabled = !temOriginal;
+    tela.modo.textContent = modoOriginal() ? '📝 Ver texto' : '📄 Ver página original';
+    tela.modo.title = temOriginal ? 'Trocar entre o texto e a página original' : 'Só para PDF e imagens';
   }
 
   // ---------- rolagem: a tela segue a leitura, mas você pode rolar livre ----------
@@ -335,12 +422,11 @@
   const spanAtual = () => (estado.spans[estado.atual] || [])[estado.pos];
 
   function destacar(i, forcarRolagem) {
-    const antigo = tela.leitura.querySelector('.pal.lendo');
-    if (antigo) antigo.classList.remove('lendo');
+    tela.leitura.querySelectorAll('.pal.lendo').forEach(e => e.classList.remove('lendo'));
     estado.pos = i;
     const s = spanAtual();
     if (!s) return;
-    s.classList.add('lendo');
+    classe(s, 'lendo', true);
     if (estado.seguir || forcarRolagem) {
       const r = s.getBoundingClientRect();
       const barra = document.querySelector('.controles').getBoundingClientRect().bottom;
@@ -350,9 +436,9 @@
   }
 
   function marcarFrase(ini, fim) {
-    for (const s of estado.frase) s.classList.remove('na-frase');
+    for (const s of estado.frase) classe(s, 'na-frase', false);
     estado.frase = (estado.spans[estado.atual] || []).slice(ini, fim + 1).filter(Boolean);
-    for (const s of estado.frase) s.classList.add('na-frase');
+    for (const s of estado.frase) classe(s, 'na-frase', true);
   }
 
   // ---------- voz ----------
@@ -450,6 +536,16 @@
     atualizarBotoes();
     tocar(+s.dataset.i);
   });
+
+  // Trocar entre texto e página original, sem perder o lugar da leitura
+  tela.modo.onclick = async () => {
+    prefs.modo = prefs.modo === 'original' ? 'texto' : 'original';
+    salvarPrefs();
+    const continuar = estado.lendo;
+    parar();
+    if (await irParaPagina(estado.atual, estado.pos) && continuar) tocar();
+    atualizarBotoes();
+  };
 
   // Atalhos: espaço = ler/pausar; setas = página
   document.addEventListener('keydown', e => {
