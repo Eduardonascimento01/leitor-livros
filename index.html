@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Leitor de Livros</title>
+  <meta name="description" content="Leia PDFs, imagens e textos em voz alta, com a palavra destacada.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📖</text></svg>">
+  <link rel="stylesheet" href="estilo.css">
+</head>
+<body>
+  <header class="topo">
+    <h1>📖 Leitor de Livros</h1>
+    <div class="arquivo">
+      <label class="botao principal" for="entrada">Abrir arquivo</label>
+      <input id="entrada" type="file" accept=".pdf,.txt,image/*" multiple hidden>
+      <button id="exemplo" class="botao" type="button">Ver exemplo</button>
+    </div>
+  </header>
+
+  <nav class="controles" aria-label="Controles de leitura">
+    <div class="grupo">
+      <button id="pagAnt" class="botao icone" type="button" title="Página anterior (←)" aria-label="Página anterior">⏮</button>
+      <button id="tocar" class="botao icone grande" type="button" title="Ler / pausar (espaço)" aria-label="Ler">▶</button>
+      <button id="pagProx" class="botao icone" type="button" title="Próxima página (→)" aria-label="Próxima página">⏭</button>
+      <span id="paginaInfo" class="info">Página 0 de 0</span>
+    </div>
+    <div class="grupo">
+      <label class="campo">Voz
+        <select id="voz"></select>
+      </label>
+      <label class="campo">Velocidade <span id="velValor">1.0x</span>
+        <input id="velocidade" type="range" min="0.5" max="2" step="0.1" value="1">
+      </label>
+    </div>
+    <div class="grupo">
+      <button id="fonteMenos" class="botao icone" type="button" title="Letra menor" aria-label="Letra menor">A−</button>
+      <button id="fonteMais" class="botao icone" type="button" title="Letra maior" aria-label="Letra maior">A+</button>
+      <button id="tema" class="botao icone" type="button" title="Tema claro/escuro" aria-label="Trocar tema">🌙</button>
+    </div>
+  </nav>
+
+  <p id="status" class="status" role="status" aria-live="polite"></p>
+
+  <main id="leitura" class="leitura">
+    <div class="vazio">
+      <p class="grande-icone">📚</p>
+      <p><strong>Abra um PDF, uma imagem ou um .txt</strong><br>
+        ou arraste o arquivo para cá.</p>
+      <p class="dica">Dica: clique em qualquer palavra para começar a ler dali.</p>
+    </div>
+  </main>
+
+  <div id="soltar" class="soltar" hidden>Solte o arquivo para abrir</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+  <script src="texto.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
