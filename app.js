@@ -2,6 +2,7 @@
 // Fluxo: abrir arquivo -> "fonte" (sabe entregar o texto de cada página)
 // -> página vira palavras (texto.js) -> a voz fala frase por frase e
 // avisa em qual letra está; a gente pinta a palavra correspondente.
+// As páginas aparecem uma embaixo da outra (rolagem contínua).
 (function () {
   'use strict';
   const $ = id => document.getElementById(id);
@@ -10,6 +11,7 @@
     tocar: $('tocar'), pagAnt: $('pagAnt'), pagProx: $('pagProx'), paginaInfo: $('paginaInfo'),
     voz: $('voz'), velocidade: $('velocidade'), velValor: $('velValor'),
     fonteMenos: $('fonteMenos'), fonteMais: $('fonteMais'), tema: $('tema'), soltar: $('soltar'),
+    voltar: $('voltar'),
   };
 
   // ---------- preferências (guardadas só neste navegador) ----------
@@ -26,14 +28,20 @@
   // ---------- estado ----------
   const estado = {
     fonte: null,        // { nome, chave, total, obterPagina(n) }
-    paginas: [],        // cache das páginas já preparadas
-    atual: 0,           // página na tela
+    paginas: [],        // promessas das páginas já preparadas (cache)
+    prontas: [],        // páginas já prontas (para uso imediato)
+    secoes: [],         // elemento <section> de cada página desenhada
+    spans: [],          // spans[pagina][palavra]
+    primeira: 0,        // primeira página desenhada
+    ultima: -1,         // última página desenhada
+    atual: 0,           // página que está sendo lida
     pos: 0,             // palavra atual (índice na página)
     lendo: false,
     geracao: 0,         // cada fala nova ganha um número; falas antigas são ignoradas
-    spans: [],
     frase: [],
     recebeuPalavra: false,
+    seguir: true,       // a tela acompanha a leitura? (desliga quando você rola)
+    autoRolando: false,
   };
 
   const status = msg => { tela.status.textContent = msg || ''; };
@@ -87,11 +95,12 @@
     if (!window.Tesseract) throw new Error('não consegui carregar o leitor de imagens (sem internet?)');
     if (!ocrTrabalhador) {
       status('Preparando o leitor de imagens (só na 1ª vez demora um pouco)...');
-      ocrTrabalhador = await Tesseract.createWorker('por', 1, {
+      ocrTrabalhador = Tesseract.createWorker('por', 1, {
         logger: m => { if (m.status === 'recognizing text') status(`${rotulo}: lendo a imagem ${Math.round(m.progress * 100)}%`); },
       });
     }
-    const { data } = await ocrTrabalhador.recognize(imagem);
+    const { data } = await (await ocrTrabalhador).recognize(imagem);
+    status('');
     return data.text;
   }
 
@@ -106,7 +115,7 @@
         const conteudo = await pagina.getTextContent();
         const linhas = Texto.linhasDoPdf(conteudo.items);
         if (linhas.join('').replace(/\s/g, '').length >= 20) return Texto.paragrafosDeLinhas(linhas);
-        // Página sem texto (escaneada): desenha e passa pelo OCR
+        // Página sem texto (escaneada ou capa): desenha e passa pelo OCR
         const vista = pagina.getViewport({ scale: 2 });
         const canvas = document.createElement('canvas');
         canvas.width = vista.width; canvas.height = vista.height;
@@ -160,23 +169,69 @@
   async function iniciar(fonte) {
     estado.fonte = fonte;
     estado.paginas = new Array(fonte.total).fill(null);
+    estado.prontas = new Array(fonte.total).fill(null);
     const marca = ler(fonte.chave, null);
     const pagina = marca && marca.pagina < fonte.total ? marca.pagina : 0;
-    await mostrarPagina(pagina, marca ? marca.palavra : 0);
-    status(marca ? `${fonte.nome}: continuando de onde você parou (página ${pagina + 1}).` : `${fonte.nome} aberto. Aperte ▶ ou clique numa palavra.`);
+    await irParaPagina(pagina, marca ? marca.palavra : 0);
+    status(marca && (marca.pagina || marca.palavra)
+      ? `${fonte.nome}: continuando de onde você parou (página ${pagina + 1} de ${fonte.total}).`
+      : `${fonte.nome} aberto (${fonte.total} ${fonte.total === 1 ? 'página' : 'páginas'}). Aperte ▶ ou clique numa palavra.`);
   }
 
-  // ---------- desenhar a página ----------
-  async function prepararPagina(n) {
+  // ---------- desenhar as páginas ----------
+  // Guarda a PROMESSA da página: se duas partes pedirem a mesma página ao mesmo tempo,
+  // o trabalho (que pode ser um OCR demorado) é feito uma vez só.
+  function prepararPagina(n) {
     if (!estado.paginas[n]) {
-      const paragrafos = await estado.fonte.obterPagina(n);
-      estado.paginas[n] = Texto.montarPagina(paragrafos);
+      const fonte = estado.fonte;
+      estado.paginas[n] = fonte.obterPagina(n).then(paragrafos => {
+        const pagina = Texto.montarPagina(paragrafos);
+        if (estado.fonte === fonte) estado.prontas[n] = pagina;
+        return pagina;
+      }).catch(e => {
+        if (estado.fonte === fonte) estado.paginas[n] = null; // deixa tentar de novo depois
+        throw e;
+      });
     }
     return estado.paginas[n];
   }
 
-  async function mostrarPagina(n, posicao = 0) {
+  function desenharSecao(n, pagina) {
+    const secao = document.createElement('section');
+    secao.className = 'pagina';
+    secao.dataset.pag = n;
+    const h = document.createElement('h2');
+    h.textContent = `Página ${n + 1} de ${estado.fonte.total}`;
+    secao.appendChild(h);
+    const spans = [];
+    for (const [ini, fim] of pagina.blocos) {
+      const p = document.createElement('p');
+      for (let i = ini; i <= fim; i++) {
+        const s = document.createElement('span');
+        s.className = 'pal';
+        s.dataset.i = i;
+        s.textContent = pagina.palavras[i];   // textContent: texto do arquivo nunca vira HTML
+        spans[i] = s;
+        p.appendChild(s);
+        if (i < fim) p.appendChild(document.createTextNode(' '));
+      }
+      secao.appendChild(p);
+    }
+    if (!pagina.blocos.length) {
+      const p = document.createElement('p');
+      p.className = 'sem-texto';
+      p.textContent = '(página sem texto)';
+      secao.appendChild(p);
+    }
+    estado.spans[n] = spans;
+    estado.secoes[n] = secao;
+    return secao;
+  }
+
+  // Começa a tela de novo a partir da página n (botões ⏮ ⏭, abrir arquivo, marcador)
+  async function irParaPagina(n, posicao = 0) {
     if (!estado.fonte || n < 0 || n >= estado.fonte.total) return false;
+    const fonte = estado.fonte;
     tela.leitura.setAttribute('aria-busy', 'true');
     let pagina;
     try {
@@ -186,42 +241,55 @@
       tela.leitura.removeAttribute('aria-busy');
       return false;
     }
+    if (estado.fonte !== fonte) return false;   // abriram outro arquivo no meio
+    estado.secoes = []; estado.spans = []; estado.frase = [];
+    estado.primeira = n; estado.ultima = n;
     estado.atual = n;
     estado.pos = Math.min(posicao, Math.max(0, pagina.palavras.length - 1));
-    estado.frase = [];
-    const frag = document.createDocumentFragment();
-    const h = document.createElement('h2');
-    h.textContent = `${estado.fonte.nome} · página ${n + 1}`;
-    frag.appendChild(h);
-    estado.spans = [];
-    for (const [ini, fim] of pagina.blocos) {
-      const p = document.createElement('p');
-      for (let i = ini; i <= fim; i++) {
-        const s = document.createElement('span');
-        s.className = 'pal';
-        s.dataset.i = i;
-        s.textContent = pagina.palavras[i];   // textContent: texto do arquivo nunca vira HTML
-        estado.spans[i] = s;
-        p.appendChild(s);
-        if (i < fim) p.appendChild(document.createTextNode(' '));
-      }
-      frag.appendChild(p);
-    }
-    if (!pagina.blocos.length) {
-      const p = document.createElement('p');
-      p.className = 'vazio';
-      p.textContent = '(página sem texto)';
-      frag.appendChild(p);
-    }
-    tela.leitura.replaceChildren(frag);
+    tela.leitura.replaceChildren(desenharSecao(n, pagina), sentinela);
     tela.leitura.removeAttribute('aria-busy');
     atualizarBotoes();
-    if (posicao > 0) destacar(estado.pos);
-    else window.scrollTo({ top: 0 });
-    // Já vai preparando a próxima página (o OCR demora)
-    if (n + 1 < estado.fonte.total) prepararPagina(n + 1).catch(() => {});
+    estado.seguir = true;
+    tela.voltar.hidden = true;
+    if (posicao > 0) destacar(estado.pos, true);
+    else rolarAte(0);
+    preencherTela();
     return true;
   }
+
+  // Coloca a próxima página embaixo das que já estão na tela
+  let anexando = null;
+  function anexarProxima() {
+    if (anexando) return anexando;
+    if (!estado.fonte || estado.ultima + 1 >= estado.fonte.total) return Promise.resolve(false);
+    const fonte = estado.fonte;
+    const n = estado.ultima + 1;
+    anexando = prepararPagina(n).then(pagina => {
+      if (estado.fonte !== fonte || estado.ultima + 1 !== n) return false;
+      tela.leitura.insertBefore(desenharSecao(n, pagina), sentinela);
+      estado.ultima = n;
+      return true;
+    }).catch(e => {
+      status(`Erro na página ${n + 1}: ${e.message}`);
+      return false;
+    }).finally(() => { anexando = null; });
+    return anexando;
+  }
+
+  // Enche a tela: vai colocando páginas até passar um pouco do fim da janela
+  async function preencherTela() {
+    const fonte = estado.fonte;
+    while (estado.fonte === fonte && sentinela.getBoundingClientRect().top < window.innerHeight * 2) {
+      if (!(await anexarProxima())) break;
+    }
+  }
+
+  // Um marcador invisível no fim do texto: quando ele chega perto da tela, carrega mais
+  const sentinela = document.createElement('div');
+  sentinela.className = 'sentinela';
+  new IntersectionObserver(entradas => {
+    if (entradas[0].isIntersecting) preencherTela();
+  }, { rootMargin: '1200px 0px' }).observe(sentinela);
 
   function atualizarBotoes() {
     const total = estado.fonte ? estado.fonte.total : 0;
@@ -233,40 +301,79 @@
     tela.tocar.setAttribute('aria-label', estado.lendo ? 'Pausar' : 'Ler');
   }
 
-  function destacar(i) {
+  // ---------- rolagem: a tela segue a leitura, mas você pode rolar livre ----------
+  function rolarAte(y, el) {
+    estado.autoRolando = true;
+    clearTimeout(rolarAte.t);
+    if (el) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    else window.scrollTo({ top: y });
+    // Fim da rolagem automática: evento scrollend (navegadores novos) ou tempo limite
+    rolarAte.t = setTimeout(() => { estado.autoRolando = false; }, 1200);
+  }
+  window.addEventListener('scrollend', () => {
+    clearTimeout(rolarAte.t);
+    rolarAte.t = setTimeout(() => { estado.autoRolando = false; }, 50);
+  });
+
+  function soltarDaLeitura() {
+    if (!estado.lendo || !estado.seguir) return;
+    estado.seguir = false;
+    tela.voltar.hidden = false;
+  }
+  // Qualquer rolagem feita por você (roda do mouse, dedo, teclado, barra de rolagem)
+  window.addEventListener('wheel', soltarDaLeitura, { passive: true });
+  window.addEventListener('touchmove', soltarDaLeitura, { passive: true });
+  window.addEventListener('scroll', () => { if (!estado.autoRolando) soltarDaLeitura(); }, { passive: true });
+
+  tela.voltar.onclick = () => {
+    estado.seguir = true;
+    tela.voltar.hidden = true;
+    const s = spanAtual();
+    if (s) rolarAte(0, s);
+  };
+
+  const spanAtual = () => (estado.spans[estado.atual] || [])[estado.pos];
+
+  function destacar(i, forcarRolagem) {
     const antigo = tela.leitura.querySelector('.pal.lendo');
     if (antigo) antigo.classList.remove('lendo');
-    const s = estado.spans[i];
-    if (!s) return;
     estado.pos = i;
+    const s = spanAtual();
+    if (!s) return;
     s.classList.add('lendo');
-    const r = s.getBoundingClientRect();
-    const barra = document.querySelector('.controles').getBoundingClientRect().bottom;
-    if (r.top < barra + 10 || r.bottom > window.innerHeight - 40) s.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    if (estado.seguir || forcarRolagem) {
+      const r = s.getBoundingClientRect();
+      const barra = document.querySelector('.controles').getBoundingClientRect().bottom;
+      if (forcarRolagem || r.top < barra + 10 || r.bottom > window.innerHeight - 40) rolarAte(0, s);
+    }
     if (estado.fonte) gravar(estado.fonte.chave, { pagina: estado.atual, palavra: i });
   }
 
   function marcarFrase(ini, fim) {
     for (const s of estado.frase) s.classList.remove('na-frase');
-    estado.frase = estado.spans.slice(ini, fim + 1).filter(Boolean);
+    estado.frase = (estado.spans[estado.atual] || []).slice(ini, fim + 1).filter(Boolean);
     for (const s of estado.frase) s.classList.add('na-frase');
   }
 
   // ---------- voz ----------
-  function falarDe(i) {
+  async function falarDe(i) {
     if (!estado.lendo) return;
-    const pagina = estado.paginas[estado.atual];
+    const pagina = estado.prontas[estado.atual];
     if (!pagina || i >= pagina.palavras.length) {
-      // Acabou a página: vai para a próxima sozinho
-      if (estado.atual + 1 < estado.fonte.total) {
-        const geracao = estado.geracao;
-        mostrarPagina(estado.atual + 1).then(ok => {
-          if (ok && estado.lendo && geracao === estado.geracao) falarDe(0);
-        });
-      } else {
+      // Acabou a página: segue para a próxima (já está na tela ou é carregada agora)
+      if (estado.atual + 1 >= estado.fonte.total) {
         parar();
         status('Fim do livro. 🎉');
+        return;
       }
+      const geracao = estado.geracao;
+      while (estado.ultima <= estado.atual) {
+        if (!(await anexarProxima())) { parar(); return; }
+      }
+      if (!estado.lendo || geracao !== estado.geracao) return;
+      estado.atual++;
+      atualizarBotoes();
+      falarDe(0);
       return;
     }
     const fim = Texto.fimDaFrase(pagina, i);
@@ -298,6 +405,8 @@
   function tocar(apartirDe) {
     if (!estado.fonte || !sintese) return;
     estado.lendo = true;
+    estado.seguir = true;
+    tela.voltar.hidden = true;
     estado.geracao++;
     sintese.cancel();
     atualizarBotoes();
@@ -306,7 +415,8 @@
     setTimeout(() => falarDe(i), 60);
     // Algumas vozes não avisam palavra por palavra: aí só a frase fica marcada
     estado.recebeuPalavra = false;
-    setTimeout(() => {
+    clearTimeout(tocar.aviso);
+    tocar.aviso = setTimeout(() => {
       if (estado.lendo && !estado.recebeuPalavra) status('Esta voz não avisa palavra por palavra: destaco a frase inteira. As vozes "Microsoft" costumam funcionar melhor.');
     }, 4000);
   }
@@ -316,6 +426,7 @@
     estado.lendo = false;
     estado.geracao++;
     if (sintese) sintese.cancel();
+    tela.voltar.hidden = true;
     atualizarBotoes();
   }
 
@@ -326,15 +437,17 @@
   async function trocarPagina(delta) {
     const continuar = estado.lendo;
     parar();
-    if (await mostrarPagina(estado.atual + delta) && continuar) tocar(0);
+    if (await irParaPagina(estado.atual + delta) && continuar) tocar(0);
   }
   tela.pagAnt.onclick = () => trocarPagina(-1);
   tela.pagProx.onclick = () => trocarPagina(1);
 
-  // Clicar numa palavra: lê a partir dela
+  // Clicar numa palavra (de qualquer página na tela): lê a partir dela
   tela.leitura.addEventListener('click', e => {
     const s = e.target.closest('.pal');
     if (!s) return;
+    estado.atual = +s.closest('.pagina').dataset.pag;
+    atualizarBotoes();
     tocar(+s.dataset.i);
   });
 
@@ -344,6 +457,7 @@
     if (e.code === 'Space') { e.preventDefault(); if (estado.fonte) tela.tocar.click(); }
     else if (e.key === 'ArrowRight' && !tela.pagProx.disabled) trocarPagina(1);
     else if (e.key === 'ArrowLeft' && !tela.pagAnt.disabled) trocarPagina(-1);
+    else if (['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End'].includes(e.key)) soltarDaLeitura();
   });
   // Botão com foco + espaço: o navegador "clica" no keyup. Sem isto, o espaço
   // pausava (keydown) e clicava o botão de novo (keyup).
@@ -370,6 +484,8 @@
     'Aperte o botão de tocar e escute. Repare que a palavra que está sendo lida fica marcada em amarelo, e a frase inteira ganha um fundo mais claro. É como um karaokê de livro.',
     '',
     'Clique em qualquer palavra deste parágrafo e a leitura começa dali. A barra de espaço pausa e continua. As setas do teclado trocam de página.',
+    '',
+    'Durante a leitura, você pode rolar a página à vontade. Para a tela voltar a acompanhar a voz, toque em "Voltar para a leitura".',
     '',
     'Você pode abrir arquivos em PDF, fotos de páginas e textos simples. Se o PDF for escaneado, o programa reconhece as letras da imagem sozinho. Quando você fechar e abrir o mesmo arquivo de novo, ele lembra onde você parou.',
   ].join('\n');

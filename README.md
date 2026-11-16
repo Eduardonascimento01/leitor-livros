@@ -5,10 +5,11 @@ Lê PDFs, fotos de páginas e arquivos `.txt` em voz alta, **destacando a palavr
 ## O que já faz (versão 1)
 - Abre **PDF** (com texto ou escaneado), **imagens** (JPG, PNG; várias de uma vez viram páginas) e **.txt**, pelo botão ou arrastando o arquivo para a janela.
 - PDF escaneado e imagens passam por **OCR** (reconhecimento de letras) em português, com o Tesseract.js.
-- **Voz** do próprio navegador: escolha a voz e a velocidade.
+- **Voz** do próprio navegador: escolha a voz e a velocidade (0.5x a 2.5x).
 - A **palavra** lida fica em amarelo e a **frase** ganha um fundo claro.
 - **Clique numa palavra** para ler a partir dela.
 - **Marcador automático:** ao abrir o mesmo arquivo de novo, continua de onde parou.
+- **Rolagem contínua:** as páginas aparecem uma embaixo da outra. Durante a leitura você pode rolar à vontade; o botão "Voltar para a leitura" faz a tela acompanhar a voz de novo.
 - Passa de página sozinho; tema claro/escuro; letra maior ou menor; funciona no celular.
 
 ### Atalhos
